@@ -1,0 +1,223 @@
+#!/bin/bash
+# Multi-Agent AI Demo - Build & Deploy Script
+
+set -e
+
+IMAGE_NAME="airbusacubed/a3-agentic-demo"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOYMENT_DIR="${SCRIPT_DIR}/deployments"
+K8S_NAMESPACE="agentic-demo"
+
+usage() {
+    printf "Multi-Agent AI Demo - Build & Deploy\n\n"
+    printf "Usage: ./stack <command>\n\n"
+    printf "Commands:\n"
+    printf "  build       Build Docker image (local architecture by default)\n"
+    printf "  local       Run locally using Docker\n"
+    printf "  push        Push image to DockerHub\n"
+    printf "  up          Deploy to GKE\n"
+    printf "  down        Remove from GKE\n"
+    printf "  test        Run tests against deployed service\n"
+    printf "  test-local  Run tests against local service\n"
+    printf "  logs        Show application logs\n"
+    printf "  status      Show deployment status\n\n"
+}
+
+build() {
+    if [[ "${1}" == "linux" ]]; then
+        printf "Building Docker image for linux/amd64...\n"
+        docker build --platform linux/amd64 -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+    else
+        printf "Building Docker image for local architecture...\n"
+        docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+    fi
+}
+
+local() {
+    printf "Checking inference backend connectivity...\n"
+    INFERENCE_URL="${INFERENCE_URL:-http://host.docker.internal:8000/v1/chat/completions}"
+
+    if [[ "$INFERENCE_URL" == *"host.docker.internal"* ]]; then
+        printf "\nNote: Using port-forward to remote inference backend.\n"
+        printf "In another terminal, run:\n"
+        printf "  kubectl port-forward -n inference svc/inference 8000:80\n\n"
+        read -p "Press Enter when port-forward is ready..."
+    fi
+
+    printf "Starting container on http://localhost:8080...\n"
+    printf "Press Ctrl+C to stop\n\n"
+
+    docker rm -f agentic-ai &>/dev/null || true
+    docker run --rm -it -p 8080:8080 \
+        -e INFERENCE_URL="$INFERENCE_URL" \
+        -e MODEL_NAME="microsoft/Phi-3-mini-4k-instruct" \
+        --name agentic-ai \
+        $IMAGE_NAME:$IMAGE_TAG
+}
+
+test_local() {
+    printf "Testing local service...\n\n"
+    SERVICE_URL="http://localhost:8080"
+
+    printf "=== Testing health endpoint...\n"
+    curl -s "$SERVICE_URL/health" | jq
+    printf "\n"
+
+    printf "=== Testing Architect Agent...\n"
+    curl -s -X POST "$SERVICE_URL/query" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "query": "Design a microservices platform",
+        "agent": "architect"
+      }' | jq -r '.response'
+    printf "\n\n"
+
+    printf "=== Testing Lawyer Agent...\n"
+    curl -s -X POST "$SERVICE_URL/query" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "query": "Licensing for Apache Kafka?",
+        "agent": "lawyer"
+      }' | jq -r '.response'
+    printf "\n\n"
+
+    printf "Local tests completed!\n"
+}
+
+push() {
+    printf "Pushing image to Docker Hub...\n"
+    docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+    printf "\nImage pushed: ${IMAGE_NAME}:${IMAGE_TAG}\n"
+}
+
+up() {
+    printf "Deploying to GKE...\n"
+    cd "$SCRIPT_DIR"
+
+    kubectl apply -f "${DEPLOYMENT_DIR}/agentic-demo.yaml"
+
+    printf "\nWaiting for deployment...\n"
+    kubectl wait --for=condition=available --timeout=300s deployment/agentic-demo -n $K8S_NAMESPACE || true
+
+    printf "\nDeployment complete!\n\n"
+    printf "Get service IP:\n"
+    printf "  kubectl get svc -n $K8S_NAMESPACE agentic-demo\n\n"
+}
+
+down() {
+    printf "Removing deployment from GKE...\n"
+    kubectl delete -f "${DEPLOYMENT_DIR}/agentic-demo.yaml" --ignore-not-found
+    printf "Cleanup complete\n"
+}
+
+test_service() {
+    printf "Running tests...\n\n"
+
+    SERVICE_IP=$(kubectl get svc -n $K8S_NAMESPACE agentic-demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+    if [ -z "$SERVICE_IP" ]; then
+        printf "Error: Service IP not found. Is the service deployed?\n"
+        printf "Run: ./stack status\n"
+        exit 1
+    fi
+
+    SERVICE_URL="http://${SERVICE_IP}"
+
+
+    printf "=== Testing health endpoint...\n"
+    curl -s "$SERVICE_URL/health" | jq
+    printf "\n"
+
+    printf "=== Testing Architect Agent...\n"
+    curl -s -X POST "$SERVICE_URL/query" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "query": "Design a real-time data pipeline for IoT sensors using open source technologies",
+        "agent": "architect"
+      }' | jq -r '.response'
+    printf "\n\n"
+
+    printf "=== Testing Lawyer Agent...\n"
+    curl -s -X POST "$SERVICE_URL/query" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "query": "What are the licensing requirements for using Apache Kafka?",
+        "agent": "lawyer"
+      }' | jq -r '.response'
+    printf "\n\n"
+
+    printf "=== Testing Auto-routing...\n"
+    curl -s -X POST "$SERVICE_URL/query" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "query": "Is GPL software compatible with proprietary software?",
+        "agent": "auto"
+      }' | jq
+    printf "\n"
+
+    printf "All tests completed!\n"
+}
+
+logs() {
+    printf "Fetching application logs...\n\n"
+    kubectl logs -n $K8S_NAMESPACE -l app=agentic-demo --tail=100 -f
+}
+
+status() {
+    printf "Deployment Status:\n\n"
+
+    printf "Deploy:\n"
+    kubectl get deploy -o wide -n $K8S_NAMESPACE 2>/dev/null || printf "  Not found\n"
+    printf "\n"
+
+    printf "Pods:\n"
+    kubectl get pods -n $K8S_NAMESPACE 2>/dev/null || printf "  Not found\n"
+    printf "\n"
+
+    printf "Service:\n"
+    kubectl get svc -n $K8S_NAMESPACE 2>/dev/null || printf "  Not found\n"
+    printf "\n"
+
+    printf "HPA:\n"
+    kubectl get hpa -n $K8S_NAMESPACE 2>/dev/null || printf "  Not found\n"
+    printf "\n"
+}
+
+case "${1}" in
+    build)
+        build "${2}"
+        ;;
+    local)
+        local
+        ;;
+    push)
+        push
+        ;;
+    up)
+        up
+        ;;
+    down)
+        down
+        ;;
+    test)
+        test_service
+        ;;
+    test-local)
+        test_local
+        ;;
+    logs)
+        logs
+        ;;
+    status)
+        status
+        ;;
+    -h|--help|help|"")
+        usage
+        ;;
+    *)
+        printf "Error: Unknown command '${1}'\n\n"
+        usage
+        exit 1
+        ;;
+esac

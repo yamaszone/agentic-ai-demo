@@ -1,0 +1,128 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-demo
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentic-config
+  namespace: agentic-demo
+data:
+  INFERENCE_URL: "http://inference.inference.svc.cluster.local/v1/chat/completions"
+  MODEL_NAME: "microsoft/Phi-3-mini-4k-instruct"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentic-demo
+  namespace: agentic-demo
+  labels:
+    app: agentic-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentic-demo
+  template:
+    metadata:
+      labels:
+        app: agentic-demo
+    spec:
+      containers:
+      - name: agentic-app
+        image: airbusacubed/a3-agentic-demo:latest
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        env:
+        - name: INFERENCE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agentic-config
+              key: INFERENCE_URL
+        - name: MODEL_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: agentic-config
+              key: MODEL_NAME
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentic-demo
+  namespace: agentic-demo
+  labels:
+    app: agentic-demo
+spec:
+  type: LoadBalancer
+  selector:
+    app: agentic-demo
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentic-demo-hpa
+  namespace: agentic-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agentic-demo
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 75
