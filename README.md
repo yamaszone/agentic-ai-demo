@@ -75,6 +75,10 @@ curl -X POST http://<SERVICE_IP>/query \
   }'
 ```
 
+## Agent Runtime Comparison
+
+See [`runtime-compare/`](runtime-compare/README.md) for a prototype that rebuilds these agents on Agno AgentOS and on CrewAI and benchmarks the two.
+
 ## Deployment
 
 See `./stack help`
